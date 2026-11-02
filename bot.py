@@ -6,7 +6,8 @@ from database import connect, initialize, PostgresConnection
 from datetime import datetime, timezone
 from html import escape
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, Update,
+                      BotCommand, BotCommandScopeChat, MenuButtonCommands)
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
@@ -98,8 +99,6 @@ def home_keyboard(admin=False) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("Portfolio", url=PORTFOLIO_URL)],
         [InlineKeyboardButton("Send a Request", callback_data="request")],
     ]
-    if admin:
-        rows.append([InlineKeyboardButton("Admin Panel", callback_data="admin:panel")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -523,6 +522,27 @@ async def deliver_messages(context, draft, report_chat_id):
         context.application.bot_data["sending"] = False
 
 
+async def configure_admin_menus(application):
+    # Chat-scoped command menus expose admin commands only in admin private chats.
+    commands = [
+        BotCommand("admin", "Open admin panel and user statistics"),
+        BotCommand("leads", "View recent client requests"),
+        BotCommand("start", "Open agency home"),
+        BotCommand("cancel", "Cancel current action"),
+    ]
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            await application.bot.set_my_commands(
+                commands, scope=BotCommandScopeChat(chat_id=admin_id)
+            )
+            await application.bot.set_chat_menu_button(
+                chat_id=admin_id, menu_button=MenuButtonCommands()
+            )
+        except TelegramError as exc:
+            logging.warning("Could not configure command menu for admin %s: %s",
+                            admin_id, type(exc).__name__)
+
+
 def main() -> None:
     token = os.environ.get("BOT_TOKEN")
     if not token:
@@ -537,7 +557,7 @@ def main() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     db_connection().close()
 
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(configure_admin_menus).build()
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("stop", stop_messages))
     application.add_handler(CommandHandler("subscribe", subscribe_messages))
