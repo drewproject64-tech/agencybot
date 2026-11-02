@@ -91,13 +91,16 @@ def get_lead(lead_id: int):
     return row
 
 
-def home_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def home_keyboard(admin=False) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton("About Agency", callback_data="about")],
         [InlineKeyboardButton("Our Services", callback_data="services")],
         [InlineKeyboardButton("Portfolio", url=PORTFOLIO_URL)],
         [InlineKeyboardButton("Send a Request", callback_data="request")],
-    ])
+    ]
+    if admin:
+        rows.append([InlineKeyboardButton("Admin Panel", callback_data="admin:panel")])
+    return InlineKeyboardMarkup(rows)
 
 
 def back_home_keyboard() -> InlineKeyboardMarkup:
@@ -129,7 +132,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Digital growth, marketing and automation for ambitious brands.\n\n"
         "Explore our services, view our portfolio, or send your project or issue directly to our team.",
         parse_mode=ParseMode.HTML,
-        reply_markup=home_keyboard(),
+        reply_markup=home_keyboard(is_admin(update)),
     )
 
 
@@ -137,14 +140,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(
         f"<b>{AGENCY_NAME}</b>\n\nUse /start to return home.\nUse Send a Request to contact our team directly.",
         parse_mode=ParseMode.HTML,
-        reply_markup=home_keyboard(),
+        reply_markup=home_keyboard(is_admin(update)),
     )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     await update.effective_message.reply_text(
-        "Request cancelled.", reply_markup=home_keyboard()
+        "Request cancelled.", reply_markup=home_keyboard(is_admin(update))
     )
 
 
@@ -164,7 +167,7 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Digital growth, marketing and automation for ambitious brands.\n\n"
             "Explore our services, view our portfolio, or send your project or issue directly to our team.",
             parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
+            reply_markup=home_keyboard(is_admin(update)),
         )
         return
 
@@ -407,7 +410,9 @@ async def admin_callback(update, context):
         return True
     await query.answer()
     action = data.split(":", 1)[1]
-    if action == "users":
+    if action == "panel":
+        await admin_panel(update, context)
+    elif action == "users":
         conn = db_connection()
         rows = conn.execute("SELECT user_id,name,username FROM users ORDER BY last_seen DESC LIMIT 20").fetchall()
         conn.close()
