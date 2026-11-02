@@ -52,3 +52,14 @@ Keep DB_PATH on persistent storage (for example /var/data/leads.db on a mounted 
 
 Run checks: python -m unittest -v
 
+
+## Neon PostgreSQL
+
+1. Create/select a Neon project and copy its PostgreSQL connection string from Connect.
+2. Set DATABASE_URL as a secret environment variable on your bot host. Keep the SSL and channel_binding options supplied by Neon. Never commit credentials.
+3. Install requirements and redeploy. Tables are created automatically. A configured but unavailable database causes an error; the bot never silently falls back to SQLite.
+4. With DATABASE_URL set, users, lead statuses and admin statistics use Neon. DB_PATH is used only when DATABASE_URL is empty. No local persistent disk is required for Neon records.
+
+To preserve existing records: stop the bot, back up the existing SQLite file, then run `python migrate_to_neon.py /path/to/leads.db` in an environment with DATABASE_URL set. Use a fresh empty Neon database; this migration refuses a nonempty destination. It preserves IDs, lead statuses, subscriptions and blocked flags, and leaves the source unchanged. After success, restart the bot with DATABASE_URL. Do not switch back to the old SQLite file after collecting new Neon records.
+
+The database connection needs to be configured on the host; repository changes alone do not connect your Neon account. Message drafts and broadcast progress are still in memory.

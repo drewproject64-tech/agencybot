@@ -2,7 +2,7 @@ import asyncio
 import secrets
 import logging
 import os
-import sqlite3
+from database import connect, initialize, PostgresConnection
 from datetime import datetime, timezone
 from html import escape
 
@@ -51,38 +51,24 @@ STATUS_LABELS = {
 
 
 def db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            username TEXT,
-            created_at TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'new'
-        )"""
-    )
-    conn.execute("""CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY, name TEXT NOT NULL, username TEXT,
-        first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
-        subscribed INTEGER NOT NULL DEFAULT 1, blocked INTEGER NOT NULL DEFAULT 0
-    )""")
-    conn.execute("""INSERT OR IGNORE INTO users
-        (user_id, name, username, first_seen, last_seen)
-        SELECT user_id, name, username, MIN(created_at), MAX(created_at)
-        FROM leads WHERE user_id > 0 GROUP BY user_id""")
-    conn.commit()
+    conn = connect(DB_PATH)
+    try:
+        initialize(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
+
 
 
 def create_lead(user) -> int:
     created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     conn = db_connection()
     cur = conn.execute(
-        "INSERT INTO leads (user_id, name, username, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO leads (user_id, name, username, created_at) VALUES (?, ?, ?, ?) RETURNING id",
         (user.id, user.full_name, user.username or "", created_at),
     )
-    lead_id = cur.lastrowid
+    lead_id = cur.fetchone()[0]
     conn.commit()
     conn.close()
     return int(lead_id)

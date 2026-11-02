@@ -49,4 +49,27 @@ class BotTests(unittest.TestCase):
         asyncio.run(bot.admin_callback(NS(callback_query=q,effective_user=self.user(99)),ctx))
         self.assertIn('admin_draft',ctx.user_data)
 
+class DatabaseTests(unittest.TestCase):
+    def test_postgres_parameter_binding_and_schema(self):
+        from unittest.mock import MagicMock, patch
+        import sys
+        import database
+        raw = MagicMock()
+        with patch.dict(sys.modules, {'psycopg': NS(connect=MagicMock(return_value=raw))}):
+            conn = database.PostgresConnection('postgresql://example/test')
+            conn.execute('SELECT name FROM users WHERE user_id=?', (123,))
+            raw.execute.assert_called_with('SELECT name FROM users WHERE user_id=%s', (123,))
+            database.initialize(conn)
+            sql = ' '.join(call.args[0] for call in raw.execute.call_args_list)
+            self.assertIn('BIGSERIAL', sql)
+            self.assertIn('user_id BIGINT', sql)
+            self.assertNotIn('INSERT OR IGNORE', sql)
+
+    def test_bad_database_url_never_uses_sqlite(self):
+        from unittest.mock import patch
+        import database
+        with patch.dict('os.environ', {'DATABASE_URL': 'invalid'}):
+            with self.assertRaises(ValueError):
+                database.connect(':memory:')
+
 if __name__ == '__main__': unittest.main()
