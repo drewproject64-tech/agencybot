@@ -1,6 +1,5 @@
-"""SQLite fallback and Neon/PostgreSQL connections."""
+"""Neon PostgreSQL database connections. No silent local fallback."""
 import os
-import sqlite3
 
 
 class PostgresConnection:
@@ -24,7 +23,7 @@ def connect(path):
         if not url.startswith(('postgres://', 'postgresql://')):
             raise ValueError('DATABASE_URL must be a PostgreSQL connection URL')
         return PostgresConnection(url)
-    return sqlite3.connect(path)
+    raise RuntimeError("DATABASE_URL is required. Set your Neon connection string in the bot hosting environment.")
 
 
 def initialize(conn):
