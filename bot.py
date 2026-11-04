@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from html import escape
 
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, Update,
-                      BotCommand, BotCommandScopeChat, MenuButtonCommands)
+                      BotCommand, BotCommandScopeChat, MenuButtonCommands, ReplyKeyboardMarkup)
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, RetryAfter, TelegramError
 from telegram.ext import (
@@ -52,13 +52,8 @@ STATUS_LABELS = {
 
 
 def db_connection():
-    conn = connect(DB_PATH)
-    try:
-        initialize(conn)
-    except Exception:
-        conn.close()
-        raise
-    return conn
+    # Database tables are created once when the bot starts.
+    return connect(DB_PATH)
 
 
 
@@ -92,6 +87,138 @@ def get_lead(lead_id: int):
     return row
 
 
+
+# Persistent menus appear below the Telegram chat input, not in every message.
+MENU_ABOUT = "ℹ️ About Agency"
+MENU_SERVICES = "🛠 Our Services"
+MENU_PORTFOLIO = "📁 Portfolio"
+MENU_CONTACT = "💬 Contact Team"
+MENU_REQUEST = "📝 Send a Request"
+MENU_HOME = "🏠 Home"
+MENU_ADMIN = "📊 Admin Panel"
+MENU_USERS = "👥 Saved Users"
+MENU_BROADCAST = "📣 Broadcast"
+MENU_DIRECT = "✉️ Message User"
+MENU_LEADS = "📋 Recent Leads"
+
+
+def main_keyboard(admin=False) -> ReplyKeyboardMarkup:
+    if admin:
+        rows = [
+            [MENU_ADMIN, MENU_USERS],
+            [MENU_BROADCAST, MENU_DIRECT],
+            [MENU_LEADS, MENU_ABOUT],
+            [MENU_SERVICES, MENU_PORTFOLIO],
+            [MENU_REQUEST, MENU_HOME],
+        ]
+    else:
+        rows = [
+            [MENU_ABOUT, MENU_SERVICES],
+            [MENU_PORTFOLIO, MENU_CONTACT],
+            [MENU_REQUEST, MENU_HOME],
+        ]
+    return ReplyKeyboardMarkup(
+        rows, resize_keyboard=True, is_persistent=True,
+        input_field_placeholder="Select an option",
+    )
+
+
+async def track_private_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Store the Telegram ID, name and username for each private-chat user."""
+    if update.effective_chat and update.effective_chat.type == "private":
+        save_user(update.effective_user)
+
+
+async def show_saved_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update):
+        return
+    conn = db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT user_id, name, username, first_seen FROM users "
+            "ORDER BY last_seen DESC LIMIT 20"
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        text = "No users saved yet."
+    else:
+        entries = ["Saved users (most recent 20)", ""]
+        for uid, name, username, first_seen in rows:
+            handle = f"@{username}" if username else "no username"
+            entries.append(f"{uid} | {name[:60]} | {handle}")
+        text = "\n".join(entries)
+    await update.effective_message.reply_text(
+        text, reply_markup=main_keyboard(True)
+    )
+
+
+async def show_menu_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle navigation before in-progress requests, replies or broadcasts."""
+    message = update.effective_message
+    choice = (message.text or "").strip()
+    keyboard = main_keyboard(is_admin(update))
+    if choice in {MENU_ABOUT, MENU_SERVICES, MENU_PORTFOLIO, MENU_CONTACT,
+                  MENU_USERS, MENU_LEADS}:
+        context.user_data.clear()
+    if choice == MENU_HOME:
+        await start(update, context)
+    elif choice == MENU_ABOUT:
+        await message.reply_text(
+            f"<b>About {AGENCY_NAME}</b>\n\n{ABOUT_TEXT}",
+            parse_mode=ParseMode.HTML, reply_markup=keyboard,
+        )
+    elif choice == MENU_SERVICES:
+        await message.reply_text(
+            SERVICES_TEXT, parse_mode=ParseMode.HTML, reply_markup=keyboard,
+        )
+    elif choice == MENU_PORTFOLIO:
+        await message.reply_text(
+            f"See our portfolio and recent projects:\n{PORTFOLIO_URL}",
+            reply_markup=keyboard,
+        )
+    elif choice == MENU_CONTACT:
+        await message.reply_text(
+            f"Contact our team directly:\n{CONTACT_URL}",
+            reply_markup=keyboard,
+        )
+    elif choice == MENU_REQUEST:
+        context.user_data.clear()
+        context.user_data["awaiting_request"] = True
+        await message.reply_text(
+            "Send your project details or support request. "
+            "You can send text, photos or documents. "
+            "Tap Home or use /cancel to exit.",
+            reply_markup=keyboard,
+        )
+    elif is_admin(update) and choice == MENU_ADMIN:
+        await admin_panel(update, context)
+    elif is_admin(update) and choice == MENU_USERS:
+        await show_saved_users(update, context)
+    elif is_admin(update) and choice == MENU_LEADS:
+        await leads_command(update, context)
+    elif is_admin(update) and choice in (MENU_BROADCAST, MENU_DIRECT):
+        context.user_data.clear()
+        if choice == MENU_BROADCAST:
+            context.user_data["admin_mode"] = "content"
+            context.user_data["admin_target"] = "all"
+            await message.reply_text(
+                "Send your text or media to broadcast. "
+                "You'll see a preview before confirming.",
+                reply_markup=keyboard,
+            )
+        else:
+            context.user_data["admin_mode"] = "target"
+            context.user_data["admin_target"] = None
+            await message.reply_text(
+                "Send the numeric Telegram ID of a saved user.",
+                reply_markup=keyboard,
+            )
+    else:
+        return False
+    return True
+
+
 def home_keyboard(admin=False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton("About Agency", callback_data="about")],
@@ -123,15 +250,13 @@ def is_admin(update: Update) -> bool:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat.type == "private":
-        save_user(update.effective_user)
     context.user_data.clear()
     await update.effective_message.reply_text(
         f"<b>{AGENCY_NAME}</b>\n\n"
         "Digital growth, marketing and automation for ambitious brands.\n\n"
         "Explore our services, view our portfolio, or send your project or issue directly to our team.",
         parse_mode=ParseMode.HTML,
-        reply_markup=home_keyboard(is_admin(update)),
+        reply_markup=main_keyboard(is_admin(update)),
     )
 
 
@@ -139,14 +264,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(
         f"<b>{AGENCY_NAME}</b>\n\nUse /start to return home.\nUse Send a Request to contact our team directly.",
         parse_mode=ParseMode.HTML,
-        reply_markup=home_keyboard(is_admin(update)),
+        reply_markup=main_keyboard(is_admin(update)),
     )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     await update.effective_message.reply_text(
-        "Request cancelled.", reply_markup=home_keyboard(is_admin(update))
+        "Request cancelled.", reply_markup=main_keyboard(is_admin(update))
     )
 
 
@@ -248,8 +373,8 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def receive_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat.type == "private":
-        save_user(update.effective_user)
+    if await show_menu_selection(update, context):
+        return
     if await admin_message(update, context):
         return
     if await handle_admin_reply(update, context):
@@ -296,7 +421,7 @@ async def receive_request(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         f"Thank you for contacting <b>{AGENCY_NAME}</b>. Your request has been sent directly to our team. "
         "We'll review it and get back to you.",
         parse_mode=ParseMode.HTML,
-        reply_markup=back_home_keyboard(),
+        reply_markup=main_keyboard(is_admin(update)),
     )
 
 
@@ -367,7 +492,6 @@ def update_user_flag(user_id, *, subscribed=None, blocked=None):
 async def stop_messages(update, context):
     if update.effective_chat.type != "private":
         return
-    save_user(update.effective_user)
     update_user_flag(update.effective_user.id, subscribed=False)
     await update.effective_message.reply_text("Agency broadcasts stopped. Use /subscribe to receive them again.")
 
@@ -375,7 +499,6 @@ async def stop_messages(update, context):
 async def subscribe_messages(update, context):
     if update.effective_chat.type != "private":
         return
-    save_user(update.effective_user)
     update_user_flag(update.effective_user.id, subscribed=True)
     await update.effective_message.reply_text("Agency broadcasts enabled. Use /stop to unsubscribe.")
 
@@ -391,11 +514,7 @@ async def admin_panel(update, context):
     conn.close()
     await update.effective_message.reply_text(
         f"Admin panel\nSaved users: {total}\nSubscribed: {subscribed}\nBlocked/unreachable: {blocked}\nBroadcast recipients: {len(recipients())}",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Broadcast to users", callback_data="admin:broadcast")],
-            [InlineKeyboardButton("Message one user", callback_data="admin:direct")],
-            [InlineKeyboardButton("Recent users", callback_data="admin:users")],
-        ]),
+        reply_markup=main_keyboard(True),
     )
 
 
@@ -555,9 +674,20 @@ def main() -> None:
     # HTTP request URLs include the Telegram bot token. Do not log them.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    db_connection().close()
+    conn = db_connection()
+    try:
+        initialize(conn)
+        saved_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        logging.info("Neon PostgreSQL connected; %s users saved", saved_users)
+    finally:
+        conn.close()
 
     application = Application.builder().token(token).post_init(configure_admin_menus).build()
+    # Capture first-time users even if they send a message without using /start.
+    application.add_handler(
+        MessageHandler(filters.ChatType.PRIVATE & filters.ALL, track_private_user),
+        group=-1,
+    )
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(CommandHandler("stop", stop_messages))
     application.add_handler(CommandHandler("subscribe", subscribe_messages))
@@ -567,7 +697,7 @@ def main() -> None:
     application.add_handler(CommandHandler("leads", leads_command))
     application.add_handler(CallbackQueryHandler(callbacks))
     application.add_handler(
-        MessageHandler(filters.ALL & ~filters.COMMAND, receive_request)
+        MessageHandler(filters.ChatType.PRIVATE & filters.ALL & ~filters.COMMAND, receive_request)
     )
     application.add_error_handler(error_handler)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
